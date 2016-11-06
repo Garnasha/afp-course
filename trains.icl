@@ -1,9 +1,8 @@
 module trains
 
 /*
-	Pieter Koopman, pieter@cs.ru.nl
-	Advanced Programming.
-	Skeleton for assignment 5.
+    Sal Wolffs, sal.wolffs@gmail.com
+	Based on a skeleton by Pieter Koopman, pieter@cs.ru.nl
 	* To be used in a project with the environment iTasks.
 	* The executable must be inside the iTask-SDK directory of the Clean distribution, 
 	  or one of its subdirectories. You can either put your program there, or use the
@@ -36,13 +35,16 @@ where
 ///////////////////////////////////
 flip f x y :== f y x
 
+($) infixr 0 :: !(.a -> .b) !.a -> .b
+($) f x = f x
 
 //This crashes the compiler, probably some recursion in generic derivation
 //derive class iTask UNIT
 //Workaround:
-:: GUNIT = GUNIT
-derive class iTask GUNIT
-
+//:: GUNIT = GUNIT
+//derive class iTask GUNIT
+//But, the exact behaviour desired is, type-theoretically erronously, implemented as Void.
+GUNIT :== Void
 
 instance TMonad TaskValue where
     (>>|) mx f = mx >>= \_.f
@@ -68,16 +70,14 @@ unpackTv :: (TaskValue (TaskValue a)) -> TaskValue a
 unpackTv NoValue = NoValue
 unpackTv (Value tvx _) = tvx //note: outer stability is ignored
 
-blindType = flip (@) (const GUNIT)
+blindTask = flip (@) (const GUNIT)
 
 /////////////////////////////////////
 //TASK COMBINATORS
 /////////////////////////////////////
 
-//(-||-) :: (Task a) -> (Task a) -> Task a
 //(-&&-) :: (Task a) -> (Task b) -> Task (a,b)
-//(-&|&-) :: (Task a) -> (Task b) -> Task (TaskValue a,TaskValue b)
-(-&|&-) infixr 4 :: !(Task a) !(Task b) -> (Task (TaskValue a,TaskValue b)) | iTask a & iTask b
+(-&|&-) infixr 2 :: !(Task a) !(Task b) -> (Task (TaskValue a,TaskValue b)) | iTask a & iTask b
 (-&|&-) taska taskb
 	= parallel
 		[(Embedded, \_ -> taska @ Left),(Embedded, \_ -> taskb @ Right)] [] @? res
@@ -102,7 +102,7 @@ coatq _ (OnAllExceptions handler) = OnAllExceptions handler
 
 //fuses TaskCont lists for steppability from the result of a (-&|&-) chain
 //NOTE: this must have the same infix direction as (-&|&-)
-(>||>) infixr 4 :: [(TaskCont a c)] [(TaskCont b c)] -> [(TaskCont (TaskValue a,TaskValue b) c)]
+(>||>) infixr 2 :: [(TaskCont a c)] [(TaskCont b c)] -> [(TaskCont (TaskValue a,TaskValue b) c)]
 (>||>) tcas tcbs = fmap (coatq (unpackTv o fmap fst)) tcas ++ fmap (coatq (unpackTv o fmap snd)) tcbs
 
 ///////////////////////////////////
@@ -110,26 +110,40 @@ coatq _ (OnAllExceptions handler) = OnAllExceptions handler
 ///////////////////////////////////
 
 
-kickIfVal kickmsg kickto = OnValue (ifValue id (\_.viewInformation (Title "Kicked") [] kickmsg >>= kickto))
+kickOnTrue kickmsg kickto = OnValue (ifValue id (\_.viewInformation (Title "Kicked") [] kickmsg >>| kickto))
 
 isMemberWithShared x share = watch share @ isMember x
 
 :: Name	:== String
                                                           
-ActionDriver = (Action "Driver" []) 
+ActionDriver = Action "Driver" [] 
+ActionController = Action "Controller" []
+ActionDesigner = Action "Designer" []
+ActionAdmin = Action "Admin" []
 
-enterChoiceFromRoles = 
-    viewInformation (Title "Choose a role") [] GUNIT ||- watch trains >>*
-    [OnAction ActionDriver (ifValue (not o isEmpty) \_.trainSelect)]
+
+enterChoiceFromRoles = blindTask $
+    viewInformation (Title "Choose a role") [] GUNIT ||- watch trains  >>*
+    [OnAction ActionDriver (ifValue (not o isEmpty) \_.trainSelect),
+    OnAction ActionController (always controllerTask),
+    OnAction ActionDesigner (always designerTask),
+    OnAction ActionAdmin (always adminTask)]
     
-trainSelect = enterChoiceWithShared (Title "Choose a train") [] trains
+trainSelect = blindTask $
+    enterChoiceWithShared (Title "Choose a train") [ChooseWith (AutoChoice trainName)] trains -&|&- (watch trains @ isEmpty) >>*
+    [OnAction ActionOk (hasValue driverTask)] >||> [kickOnTrue "The last train was deleted" enterChoiceFromRoles]
+
+
 
 ///////////////////////////////////
 //TRAINS
 ///////////////////////////////////
 
-:: Train = {name :: Name, loc :: Coords, dir :: Direction}
-:: Direction :== Either GUNIT GUNIT
+:: Train = {tname :: Name, loc :: Coords, dir :: Direction}
+:: Direction :== Either Void Void
+
+trainName :: Train -> Name
+trainName train = train.tname
 
 derive class iTask Train
 
@@ -151,6 +165,34 @@ enterNewTrain = (enterInformation "New user:" [] >>*
 //GRID
 ///////////////////////////////////
 :: Coords :== (!Int,!Int)
+
+
+///////////////////////////////////
+//TILES
+///////////////////////////////////
+
+
+///////////////////////////////////
+//ROLES
+///////////////////////////////////
+
+//Driver
+/////////////////
+driverTask train = blindTask $
+    viewInformation (Title "Driver") [] ("Train: " +++ trainName train)
+
+//Controller
+/////////////////
+controllerTask = viewInformation (Title "Controller") [] Void
+
+//Designer
+/////////////////
+designerTask = viewInformation (Title "Designer") [] Void
+
+//Admin
+/////////////////
+adminTask = blindTask $
+    updateSharedInformation (Title "Admin") [] names
 ////////////////////////////////////////////////////////////
 
 names :: Shared [Name]
@@ -182,32 +224,23 @@ doShareIdentified task = nameSelection >>* [OnValue (hasValue task)]
 //listSharePrepend :: (Shared [a]) a -> Task a  | iTask a
 listSharePrepend share newval = upd (\shared.[newval:shared]) share
 
-adminTask = blindType (updateSharedInformation "Admin" [] names)
-userTask name = blindType (viewInformation (Title "Logged in as:") [] name)
+userTask name = blindTask (viewInformation (Title "Logged in as:") [] name)
 
 
-/*
-sharedMain name = ((if (name == "admin") adminTask (userTask name)) >>* 
-    [OnValue (ifValue (const False) (\_.return GUNIT))]) -&|&- (watch names @ not o isMember name) >>*
-    [OnValue (ifValue (pulldown o snd) (\_.(viewInformation (Title "Kicked") [] "Your account was deleted" >>| sharedTask)))]
-    where 
-        pulldown (Value True _) = True
-        pulldown _ = False
-        tempsnd (_,(Value True _)) = True
-        tempsnd _ = False
-        user_deleted (_,Value noms _) 
-            | not (isMember name noms) = True
-            | otherwise = False
-        user_deleted _ = False
-*/
-
-sharedMain name = (if (name == "admin") adminTask (userTask name)) -&|&- (isMemberWithShared name names @ not) >>* 
-    [] >||> [OnValue (ifValue id kickstep)]
-    where 
-        kickstep _ = viewInformation (Title "Kicked") [] "Your account was deleted" >>| sharedTask
+sharedMain name = (if (name == "admin") adminTask (userTask name)) -&|&- 
+    (isMemberWithShared name names @ not) >>* 
+    [] >||> [kickOnTrue "Your account was deleted" sharedTask]
 
 
-sharedTask = blindType (doShareIdentified sharedMain)
+forceMString :: (Maybe String) -> Maybe String
+forceMString x = x
+newBindDemo = (enterInformation (Title "Entry") []  <<@ ArrangeHorizontal  >&> 
+    \s.(whileUnchanged s (viewInformation (Title "Output") [] o forceMString)  <<@ ArrangeHorizontal)) <<@ ArrangeHorizontal
+
+oldBindDemo = enterInformation (Title "Entry") [] >>= viewInformation (Title "Output") [] o forceMString
+//sharedTask = blindTask (doShareIdentified sharedMain)
+//sharedTask = newBindDemo -&&- oldBindDemo
+sharedTask = enterChoiceFromRoles
 
 Start :: *World -> *World
 Start world = startEngine sharedTask world                             
