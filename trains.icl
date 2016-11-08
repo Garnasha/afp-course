@@ -12,6 +12,31 @@ module trains
 
 */
 
+//I've given up. 
+//Spent some time figuring out what kind of combinator I needed to achieve 
+//some guarantees on drivers (specifically, you can't drive a deleted train).  
+//
+//Couldn't find any combinator with the right type. Took some learning to be
+//able to write my own and make it suitable for the general case. Added some 
+//more utilities. Decided on and defined the datastructure to be used. 
+//
+//I had planned to define the drawing functions recursively... and when the 
+//time came to do so, in the planning stage of writing the first draw function, 
+//"draw interactive Sign", I ran into the final problem: oh, right, the state
+//fed to an Image m must be a Shared m. Which takes a Lens, or equivalent code. 
+//And SDSLenses are yet another new thing. Which can't be found by type because
+//their type is so convoluted that Cloogle doesn't recognize them when searched
+//for as something like :: (Shared a) (a -> b) (b -> a) -> Shared b .
+//
+//I underestimated this project, and am now well over 16 hours into it. 
+//I don't have the clock time anymore to turn it into anything meriting a 
+//passing grade, let alone one able to significantly improve any passing 
+//exam grade. I never truly had the labour time available to learn two 
+//DSLs in two weeks using only a search engine, one which is not optimized 
+//for those DSLs. 
+//
+//
+
 import iTasks
 import StdArray // for the size of a String
 
@@ -38,20 +63,16 @@ flip f x y :== f y x
 ($) infixr 0 :: !(.a -> .b) !.a -> .b
 ($) f x = f x
 
-class at f where
-    (at) infixl 9 :: (f a) !Int -> Maybe a
+//Not quite the way I'd have liked it but... better than (!!)
+class `at` f where
+    (`at`) infixl 9 :: (Maybe (f a)) !Int -> Maybe a
 
-instance at [] where
-    (at) xs i 
+instance `at` [] where
+    (`at`) (Just xs) i 
     | i < 0 = Nothing
     | i > length xs = Nothing
     | otherwise = Just (xs !! i)
-
-:: MaybeList a = MaybeList (Maybe [a])
-
-instance at MaybeList where
-    (at) (MaybeList Nothing) _ = Nothing
-    (at) (MaybeList (Just xs)) i = xs at i
+    (`at`) _ _ = Nothing
 
 instance TMonad TaskValue where
     (>>|) mx f = mx >>= \_.f
@@ -72,6 +93,11 @@ instance TFunctor TaskValue where
 //tjoin :: (t (t a)) -> (t a) | TMonad t //this somehow causes an unsolvable internal overloading of (>>=)
 tjoin mx = mx >>= id
 
+collapseTvMaybe NoValue = NoValue
+collapseTvMaybe (Value Nothing _) = NoValue
+collapseTvMaybe tv = tv
+
+
 //a variant on tjoin which discards outer stability
 unpackTv :: (TaskValue (TaskValue a)) -> TaskValue a
 unpackTv NoValue = NoValue
@@ -83,6 +109,14 @@ blindTask = flip (@) (const Void)
 //TASK COMBINATORS
 /////////////////////////////////////
 
+//Parallel bind, which is likely actually monadic
+(>&=) infixl 1 :: (Task a) (a -> Task b) -> Task b   | iTask a & iTask b
+(>&=) taska ataskb = taska >&> flip whileUnchanged (nothingToNoVal ataskb)
+    where
+        nothingToNoVal _ Nothing = return Void @? const NoValue
+        nothingToNoVal atb (Just x) = atb x
+
+
 //(-&&-) :: (Task a) -> (Task b) -> Task (a,b)
 (-&|&-) infixr 2 :: !(Task a) !(Task b) -> (Task (TaskValue a,TaskValue b)) | iTask a & iTask b
 (-&|&-) taska taskb
@@ -93,6 +127,7 @@ blindTask = flip (@) (const Void)
         res (Value [(_,va),(_,vb)] _) = Value (fmap fromLeft va,fmap fromRight vb) False
         fromLeft (Left x) = x
         fromRight (Right y) = y
+
 
 
 //co@?, except not infix. Transforms TaskValues before consumption by TaskCont 
@@ -111,7 +146,6 @@ coatq _ (OnAllExceptions handler) = OnAllExceptions handler
 ///////////////////////////////////
 //USER CONTROL
 ///////////////////////////////////
-
 
 kickOnTrue kickmsg kickto = OnValue (ifValue id (\_.viewInformation (Title "Kicked") [] kickmsg >>| kickto))
 
@@ -140,36 +174,41 @@ trainSelect = blindTask $
 //ENTITIES
 ///////////////////////////////////
 
-derive class iTask Direction, Coords, Cardinal, Train, Tile, Track, Edge, Signal
+derive class iTask Coords, Cardinal, Train, Tile, Track, Edge, Signal
 
 //TRAINS
 ////////////////
 
-:: Direction = Bool //right || up && !(left)
-:: Train = {tname :: Name, loc :: Coords, dir :: Direction}
+:: Direction :== Bool //right || up && !(left)
+:: Train = {tname :: Display Name, loc :: Display Coords, dir :: Direction, dest :: String}
 
 
 trainName :: Train -> Name
-trainName train = train.tname
+trainName train = fromDisplay train.tname
+
+trainLoc train = fromDisplay train.loc
 
 
 trains :: Shared [Train]
 trains = sharedStore "Trains" []
 
-enterNewTrain :: Task Name
-enterNewTrain = (enterInformation "New user:" [] >>* 
-    [OnAction ActionOk (hasValue (
-    \n.upd (prepend n) names ||- 
-    return n))])
+:: TrainEntry = {train_name :: Name, facing_right_or_straight_up :: Direction, destination :: String}
+derive class iTask TrainEntry
+
+addTrain :: Tile -> Task Train
+addTrain tile = enterInformation "Add train on selected tile:" [EnterWith (onTile tile)] >>* 
+    [OnAction ActionOk (ifValue (\_.isNothing tile.train) (\train.upd (prepend train) trains @! train))]
     where
-        prepend :: String [String] -> [String]
         prepend s ss = [s:ss]
+        onTile tile tentry = 
+            {tname = Display tentry.train_name, loc = Display tile.pos, dir=tentry.facing_right_or_straight_up, dest=tentry.destination}
 
 
 
 //GRID
 ////////////////
-:: Coords = {x :: Int,y :: Int}
+:: Coords = {x :: !Int,y :: !Int}
+
 
 :: Layout :== [[Tile]]
 
@@ -178,9 +217,10 @@ baseLayout = [[baseTile]]
 layoutShare :: Shared Layout
 layoutShare = sharedStore "layout" baseLayout
 
-getTile coords = get layoutShare @ toTile coords
-watchTile coords = watch layoutShare @ toTile coords
-toTile coords lay = Nothing
+getTile coords = get layoutShare @ toTile coords @? collapseTvMaybe
+watchTile coords = watch layoutShare @ toTile coords @? collapseTvMaybe
+
+toTile coords lay = return lay `at` coords.x `at` coords.y
 
 
 //TILES
@@ -197,7 +237,7 @@ baseTile = {label="Home",pos={x=0,y=0},track = NoTrack, train = Nothing}
 //TRACKS
 ////////////////
 
-//Decision: Points act as two Segments, of which one active, and as such, take signals.
+//Decision: Points act as two Segments, of which one active, and as such, Points take Signals.
 :: Track = NoTrack | Terminal Edge | Segment Edge Edge | Point Edge Edge Edge
 
 activeTrack (Point base active _) = Segment base active
@@ -226,10 +266,11 @@ toggleTrackPoint (Point base active inactive) = Point base active inactive
 driverTask train = blindTask $
     viewInformation (Title "Driver") [] ("Train: " +++ trainName train)
 
+
 //Controller
 /////////////////
 controllerTask = blindTask $
-    viewInformation (Title "Controller") [] Void
+    viewInformation (Title "Controller") [] Void ||- (watch layoutShare @ hd o hd) >&= addTrain
 
 //Designer
 /////////////////
