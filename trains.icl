@@ -35,7 +35,23 @@ module trains
 //DSLs in two weeks using only a search engine, one which is not optimized 
 //for those DSLs. 
 //
+//Fun, and learned a lot about iTasks, but for the assignment, I'm declaring 
+//failure, and it'll be weeks before I can afford to spend this much time on 
+//a project again.
 //
+//
+//
+//
+//PS. Please, if the flagship of your language is a DSL which heavily leans 
+//on record field names to determine interface field names... Do NOT require 
+//such field names/selectors to be unique. As near as I can tell, it's 
+//because they're implicit functions, and typed as such... which suggests 
+//implicit classes would solve this.
+//
+//Also, local types (introduced by "where" clause in a function) would be great.
+//Better yet, anonymous records, like (anonymous) lambdas (not tried explicitly, 
+//but pretty sure they're not there), though that would produce difficulty with 
+//derive statements.
 
 import iTasks
 import StdArray // for the size of a String
@@ -270,7 +286,7 @@ driverTask train = blindTask $
 //Controller
 /////////////////
 controllerTask = blindTask $
-    viewInformation (Title "Controller") [] Void ||- (watch layoutShare @ hd o hd) >&= addTrain
+    viewInformation (Title "Controller") [] Void ||- (enterChoiceWithShared () [] (mapRead flatten layoutShare)) >&= addTrain
 
 //Designer
 /////////////////
@@ -280,7 +296,7 @@ designerTask = blindTask $
 //Admin
 /////////////////
 adminTask = blindTask $
-    updateSharedInformation (Title "Admin") [] names
+    updateSharedInformation (Title "Admin") [] (trains >+< layoutShare)
 ////////////////////////////////////////////////////////////
 
 names :: Shared [Name]
