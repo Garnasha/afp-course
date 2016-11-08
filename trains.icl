@@ -38,13 +38,20 @@ flip f x y :== f y x
 ($) infixr 0 :: !(.a -> .b) !.a -> .b
 ($) f x = f x
 
-//This crashes the compiler, probably some recursion in generic derivation
-//derive class iTask UNIT
-//Workaround:
-//:: GUNIT = GUNIT
-//derive class iTask GUNIT
-//But, the exact behaviour desired is, type-theoretically erronously, implemented as Void.
-GUNIT :== Void
+class at f where
+    (at) infixl 9 :: (f a) !Int -> Maybe a
+
+instance at [] where
+    (at) xs i 
+    | i < 0 = Nothing
+    | i > length xs = Nothing
+    | otherwise = Just (xs !! i)
+
+:: MaybeList a = MaybeList (Maybe [a])
+
+instance at MaybeList where
+    (at) (MaybeList Nothing) _ = Nothing
+    (at) (MaybeList (Just xs)) i = xs at i
 
 instance TMonad TaskValue where
     (>>|) mx f = mx >>= \_.f
@@ -70,7 +77,7 @@ unpackTv :: (TaskValue (TaskValue a)) -> TaskValue a
 unpackTv NoValue = NoValue
 unpackTv (Value tvx _) = tvx //note: outer stability is ignored
 
-blindTask = flip (@) (const GUNIT)
+blindTask = flip (@) (const Void)
 
 /////////////////////////////////////
 //TASK COMBINATORS
@@ -84,10 +91,6 @@ blindTask = flip (@) (const GUNIT)
     where 
 	    res (Value [(_,Value (Left a) sa),(_,Value (Right b) sb)] _)   = Value (Value a sa,Value b sb) (sa && sb)
         res (Value [(_,va),(_,vb)] _) = Value (fmap fromLeft va,fmap fromRight vb) False
-       // res (Value [(_,NoValue),(_,NoValue)] _) = Value (NoValue,NoValue) False
-	   // res (Value [(_,NoValue),(_,Value (Right b) sb)] _)   = Value (NoValue,Value b sb) False
-	   // res (Value [(_,Value (Left a) sa),(_,NoValue)] _)   = Value (Value a sa,NoValue) False
-        //res ab=:(Value _ sta,Value _ stb) = Value ab (sta && stb)
         fromLeft (Left x) = x
         fromRight (Right y) = y
 
@@ -123,7 +126,7 @@ ActionAdmin = Action "Admin" []
 
 
 enterChoiceFromRoles = blindTask $
-    viewInformation (Title "Choose a role") [] GUNIT ||- watch trains  >>*
+    viewInformation (Title "Choose a role") [] Void ||- watch trains  >>*
     [OnAction ActionDriver (ifValue (not o isEmpty) \_.trainSelect),
     OnAction ActionController (always controllerTask),
     OnAction ActionDesigner (always designerTask),
@@ -133,19 +136,22 @@ trainSelect = blindTask $
     enterChoiceWithShared (Title "Choose a train") [ChooseWith (AutoChoice trainName)] trains -&|&- (watch trains @ isEmpty) >>*
     [OnAction ActionOk (hasValue driverTask)] >||> [kickOnTrue "The last train was deleted" enterChoiceFromRoles]
 
-
-
 ///////////////////////////////////
+//ENTITIES
+///////////////////////////////////
+
+derive class iTask Direction, Coords, Cardinal, Train, Tile, Track, Edge, Signal
+
 //TRAINS
-///////////////////////////////////
+////////////////
 
+:: Direction = Bool //right || up && !(left)
 :: Train = {tname :: Name, loc :: Coords, dir :: Direction}
-:: Direction :== Either Void Void
+
 
 trainName :: Train -> Name
 trainName train = train.tname
 
-derive class iTask Train
 
 trains :: Shared [Train]
 trains = sharedStore "Trains" []
@@ -161,16 +167,55 @@ enterNewTrain = (enterInformation "New user:" [] >>*
 
 
 
-///////////////////////////////////
 //GRID
-///////////////////////////////////
-:: Coords :== (!Int,!Int)
+////////////////
+:: Coords = {x :: Int,y :: Int}
+
+:: Layout :== [[Tile]]
+
+baseLayout = [[baseTile]]
+
+layoutShare :: Shared Layout
+layoutShare = sharedStore "layout" baseLayout
+
+getTile coords = get layoutShare @ toTile coords
+watchTile coords = watch layoutShare @ toTile coords
+toTile coords lay = Nothing
 
 
-///////////////////////////////////
 //TILES
-///////////////////////////////////
+////////////////
 
+:: Cardinal = N | E | S | W
+
+:: Tile = {label :: String, pos :: Coords, track :: Track, train :: Maybe Train}
+
+baseTile = {label="Home",pos={x=0,y=0},track = NoTrack, train = Nothing}
+
+
+
+//TRACKS
+////////////////
+
+//Decision: Points act as two Segments, of which one active, and as such, take signals.
+:: Track = NoTrack | Terminal Edge | Segment Edge Edge | Point Edge Edge Edge
+
+activeTrack (Point base active _) = Segment base active
+activeTrack x = x
+
+toggleTrackPoint (Point base active inactive) = Point base active inactive
+
+//EDGES
+////////////////
+
+:: Edge = {side :: Cardinal, signal :: Signal}
+
+
+
+//SIGNALS
+////////////////
+
+:: Signal = Green | Red | Disabled
 
 ///////////////////////////////////
 //ROLES
@@ -183,11 +228,13 @@ driverTask train = blindTask $
 
 //Controller
 /////////////////
-controllerTask = viewInformation (Title "Controller") [] Void
+controllerTask = blindTask $
+    viewInformation (Title "Controller") [] Void
 
 //Designer
 /////////////////
-designerTask = viewInformation (Title "Designer") [] Void
+designerTask = blindTask $
+    viewInformation (Title "Designer") [] Void
 
 //Admin
 /////////////////
@@ -197,9 +244,6 @@ adminTask = blindTask $
 
 names :: Shared [Name]
 names = sharedStore "UserNames" []
-
-ideaCount :: Shared Int
-ideaCount = sharedStore "IdeaCount" 1
 
 okMask :: (Task a) -> Task a | iTask a
 okMask t = (t >>* [OnAction ActionOk (hasValue return)])
@@ -238,6 +282,8 @@ newBindDemo = (enterInformation (Title "Entry") []  <<@ ArrangeHorizontal  >&>
     \s.(whileUnchanged s (viewInformation (Title "Output") [] o forceMString)  <<@ ArrangeHorizontal)) <<@ ArrangeHorizontal
 
 oldBindDemo = enterInformation (Title "Entry") [] >>= viewInformation (Title "Output") [] o forceMString
+
+
 //sharedTask = blindTask (doShareIdentified sharedMain)
 //sharedTask = newBindDemo -&&- oldBindDemo
 sharedTask = enterChoiceFromRoles
